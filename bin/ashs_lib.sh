@@ -42,6 +42,109 @@ fi
 # Read the config file
 source ${ASHS_CONFIG?}
 
+# ----------------------------------------------------
+# Load scheduler configuration (new modular system)
+# ----------------------------------------------------
+# Search for scheduler config in order of priority
+ASHS_SCHEDULER_CONF_LOADED=""
+for _sched_conf in \
+    "$ASHS_SCHEDULER_CONF" \
+    "./ashs_scheduler.conf" \
+    "$ASHS_WORK/ashs_scheduler.conf" \
+    "$HOME/.ashs_scheduler.conf" \
+    "$ASHS_ROOT/bin/ashs_scheduler.conf"; do
+  if [[ -n "$_sched_conf" && -f "$_sched_conf" ]]; then
+    source "$_sched_conf"
+    ASHS_SCHEDULER_CONF_LOADED="$_sched_conf"
+    echo "Loaded scheduler config from: $_sched_conf"
+    break
+  fi
+done
+
+# Map new config variables to legacy variables if not already set
+if [[ -n "$ASHS_SCHEDULER" && -z "$ASHS_USE_QSUB" && -z "$ASHS_USE_SLURM" && -z "$ASHS_USE_LSF" && -z "$ASHS_USE_PARALLEL" ]]; then
+  case "$ASHS_SCHEDULER" in
+    slurm)   ASHS_USE_SLURM=1 ;;
+    sge)     ASHS_USE_QSUB=1 ;;
+    lsf)     ASHS_USE_LSF=1 ;;
+    parallel) ASHS_USE_PARALLEL=1 ;;
+    local)   ;; # No flag needed
+    auto)
+      # Auto-detect scheduler
+      if command -v sbatch >/dev/null 2>&1; then
+        ASHS_USE_SLURM=1
+        echo "Auto-detected SLURM"
+      elif [[ -n "$SGE_ROOT" ]] && command -v qsub >/dev/null 2>&1; then
+        ASHS_USE_QSUB=1
+        echo "Auto-detected SGE"
+      elif [[ -n "$LSF_BINDIR" ]] && command -v bsub >/dev/null 2>&1; then
+        ASHS_USE_LSF=1
+        echo "Auto-detected LSF"
+      elif command -v parallel >/dev/null 2>&1; then
+        ASHS_USE_PARALLEL=1
+        echo "Auto-detected GNU Parallel"
+      else
+        echo "No scheduler detected, using local sequential execution"
+      fi
+      ;;
+  esac
+fi
+
+# Build QOPTS from config if not already set via command line
+if [[ -z "$QOPTS" && -z "$ASHS_QSUB_OPTS" ]]; then
+  _build_qopts_from_config() {
+    local stage="${1:-0}"
+    local opts=""
+
+    # Get stage-specific or default values
+    local mem_var="ASHS_STAGE_${stage}_MEMORY"
+    local cores_var="ASHS_STAGE_${stage}_CORES"
+    local time_var="ASHS_STAGE_${stage}_TIME"
+
+    local memory="${!mem_var:-$ASHS_DEFAULT_MEMORY}"
+    local cores="${!cores_var:-$ASHS_DEFAULT_CORES}"
+    local walltime="${!time_var:-$ASHS_DEFAULT_TIME}"
+    local queue="${ASHS_DEFAULT_QUEUE}"
+
+    if [[ $ASHS_USE_SLURM ]]; then
+      [[ -n "$memory" ]] && opts+=" --mem=$memory"
+      [[ -n "$cores" ]] && opts+=" --cpus-per-task=$cores"
+      [[ -n "$walltime" ]] && opts+=" --time=$walltime"
+      [[ -n "$queue" ]] && opts+=" --partition=$queue"
+      [[ -n "$ASHS_SLURM_EXTRA_OPTS" ]] && opts+=" $ASHS_SLURM_EXTRA_OPTS"
+    elif [[ $ASHS_USE_QSUB ]]; then
+      [[ -n "$memory" ]] && opts+=" -l h_vmem=$memory"
+      [[ -n "$cores" ]] && opts+=" -pe smp $cores"
+      [[ -n "$walltime" ]] && opts+=" -l h_rt=$walltime"
+      [[ -n "$queue" ]] && opts+=" -q $queue"
+      [[ -n "$ASHS_SGE_EXTRA_OPTS" ]] && opts+=" $ASHS_SGE_EXTRA_OPTS"
+    elif [[ $ASHS_USE_LSF ]]; then
+      if [[ -n "$memory" ]]; then
+        local mem_mb
+        if [[ "$memory" =~ ^([0-9]+)G$ ]]; then
+          mem_mb=$((${BASH_REMATCH[1]} * 1000))
+        elif [[ "$memory" =~ ^([0-9]+)M$ ]]; then
+          mem_mb="${BASH_REMATCH[1]}"
+        else
+          mem_mb="$memory"
+        fi
+        opts+=" -R 'rusage[mem=${mem_mb}]'"
+      fi
+      [[ -n "$cores" ]] && opts+=" -n $cores"
+      [[ -n "$queue" ]] && opts+=" -q $queue"
+      [[ -n "$ASHS_LSF_EXTRA_OPTS" ]] && opts+=" $ASHS_LSF_EXTRA_OPTS"
+    elif [[ $ASHS_USE_PARALLEL ]]; then
+      [[ -n "$cores" ]] && opts+=" -j $cores"
+      [[ -n "$ASHS_PARALLEL_EXTRA_OPTS" ]] && opts+=" $ASHS_PARALLEL_EXTRA_OPTS"
+    fi
+
+    echo "$opts"
+  }
+
+  # Set default QOPTS from config (can be overridden per-stage via hook)
+  QOPTS=$(_build_qopts_from_config 0)
+fi
+
 # Account for older variables names in the config
 ASHS_PAIRWISE_T1_WEIGHT=${ASHS_PAIRWISE_T1_WEIGHT:-$ASHS_PAIRWISE_ANTS_T1_WEIGHT}
 ASHS_TEMPLATE_ITER=${ASHS_TEMPLATE_ITER:-$ASHS_TEMPLATE_ANTS_ITER}
@@ -49,10 +152,17 @@ if [[ ! $ASHS_PAIRWISE_GREEDY_OPTIONS && $ASHS_PAIRWISE_ANTS_STEPSIZE ]]; then
   ASHS_PAIRWISE_GREEDY_OPTIONS="-e $ASHS_PAIRWISE_ANTS_STEPSIZE"
 fi
 
-# Limit the number of threads to one if using QSUB/BSUB
-if [[ $ASHS_USE_QSUB || $ASHS_USE_LSF ]]; then
-  if [[ $NSLOTS ]]; then
+# Limit the number of threads based on scheduler environment
+if [[ $ASHS_USE_QSUB || $ASHS_USE_LSF || $ASHS_USE_SLURM ]]; then
+  # Determine available slots from scheduler environment
+  if [[ -n "$SLURM_CPUS_PER_TASK" ]]; then
+    export ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS=$SLURM_CPUS_PER_TASK
+  elif [[ -n "$SLURM_NTASKS" ]]; then
+    export ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS=$SLURM_NTASKS
+  elif [[ -n "$NSLOTS" ]]; then
     export ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS=$NSLOTS
+  elif [[ -n "$LSB_MAX_NUM_PROCESSORS" ]]; then
+    export ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS=$LSB_MAX_NUM_PROCESSORS
   else
     export ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS=1
   fi
@@ -214,23 +324,6 @@ function qsubmit_single_array()
 
     qwait $DEPSTRING
 
-  # Special handling for SLURM
-  elif [[ $ASHS_USE_SLURM ]]; then
-
-    # Launch separate jobs
-    local DEPSTRING=""
-    for p1 in $PARAM; do
-      
-      JOB_ID=$(sbatch $QOPTS -o $ASHS_WORK/dump/${UNIQ_NAME}_%j.out -D . $* $p1 \
-        | awk '{print $4}')
-
-      DEPSTRING="$DEPSTRING:$JOB_ID"
-      ASHS_JOB_INDEX=$((ASHS_JOB_INDEX+1))
-
-    done
-
-    qwait $DEPSTRING
-
   else
 
     for p1 in $PARAM; do
@@ -296,24 +389,6 @@ function qsubmit_double_array()
     for p1 in $PARAM1; do
       for p2 in $PARAM2; do
 
-        JOB_ID=$(sbatch $QOPTS -o $ASHS_WORK/dump/${UNIQ_NAME}_%j.out -D . $* $p1 $p2 \
-          | awk '{print $4}')
-
-        DEPSTRING="$DEPSTRING:$JOB_ID"
-        ASHS_JOB_INDEX=$((ASHS_JOB_INDEX+1))
-      done
-    done
-
-    qwait $DEPSTRING
-
-  # Special handling for SLURM
-  elif [[ $ASHS_USE_SLURM ]]; then
-
-    # Launch separate jobs
-    local DEPSTRING=""
-    for p1 in $PARAM1; do
-      for p2 in $PARAM2; do
-      
         JOB_ID=$(sbatch $QOPTS -o $ASHS_WORK/dump/${UNIQ_NAME}_%j.out -D . $* $p1 $p2 \
           | awk '{print $4}')
 

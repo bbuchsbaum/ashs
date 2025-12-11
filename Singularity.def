@@ -1,0 +1,102 @@
+Bootstrap: docker
+From: ubuntu:22.04
+
+%labels
+    Author ASHS Team
+    Version 2.0.0
+    Description Automatic Segmentation of Hippocampal Subfields (ASHS)
+
+%help
+    ASHS (Automatic Segmentation of Hippocampal Subfields)
+
+    This container provides the ASHS pipeline for automatic segmentation
+    of hippocampal subfields in MRI data.
+
+    Usage:
+        singularity run ashs.sif -a <atlas> -g <t1.nii.gz> -f <t2.nii.gz> -w <output_dir>
+
+        # Or explicitly:
+        singularity exec ashs.sif ashs_main.sh [options]
+
+    For training new atlases:
+        singularity exec ashs.sif ashs_train.sh [options]
+
+    Options:
+        Run with -h flag for full usage information:
+        singularity exec ashs.sif ashs_main.sh -h
+
+    Environment:
+        ASHS_ROOT is automatically set inside the container.
+
+    Scheduler Support:
+        The container supports SLURM, SGE, LSF, and GNU Parallel.
+        Use appropriate flags (-S, -Q, -l, -P) or set ASHS_SCHEDULER
+        in your configuration file.
+
+%environment
+    export ASHS_ROOT=/opt/ashs
+    export PATH=/opt/ashs/bin:/opt/ashs/ext/Linux/bin:$PATH
+    export LC_ALL=C
+
+%post
+    # Update and install dependencies
+    apt-get update && apt-get install -y --no-install-recommends \
+        bc \
+        curl \
+        wget \
+        ca-certificates \
+        libgomp1 \
+        libpng16-16 \
+        libtiff5 \
+        libglu1-mesa \
+        libsm6 \
+        libice6 \
+        libxt6 \
+        libxext6 \
+        libxrender1 \
+        parallel \
+        perl \
+        && rm -rf /var/lib/apt/lists/*
+
+    # Create ASHS directory
+    mkdir -p /opt/ashs
+
+    # Note: In a real build, you would either:
+    # 1. Copy pre-built binaries from the host
+    # 2. Clone and build from source
+    # 3. Download a release package
+
+    # Example for downloading a release (uncomment and modify):
+    # cd /opt
+    # wget https://github.com/pyushkevich/ashs/releases/download/vX.X.X/ashs-X.X.X-linux64.tar.gz
+    # tar -xzf ashs-X.X.X-linux64.tar.gz
+    # rm ashs-X.X.X-linux64.tar.gz
+    # mv ashs-X.X.X ashs
+
+%files
+    # Copy the entire ASHS distribution into the container
+    # This assumes you're building from the ASHS source directory
+    bin /opt/ashs/bin
+    ext/Linux /opt/ashs/ext/Linux
+
+%runscript
+    exec /opt/ashs/bin/ashs_main.sh "$@"
+
+%test
+    # Basic sanity checks
+    echo "Testing ASHS container..."
+
+    # Check that main scripts exist
+    test -f /opt/ashs/bin/ashs_main.sh || exit 1
+    test -f /opt/ashs/bin/ashs_train.sh || exit 1
+    test -f /opt/ashs/bin/ashs_lib.sh || exit 1
+
+    # Check that key binaries exist
+    test -x /opt/ashs/ext/Linux/bin/greedy || exit 1
+    test -x /opt/ashs/ext/Linux/bin/c3d || exit 1
+    test -x /opt/ashs/ext/Linux/bin/label_fusion || exit 1
+
+    # Check that parallel is available
+    command -v parallel >/dev/null 2>&1 || exit 1
+
+    echo "All tests passed!"

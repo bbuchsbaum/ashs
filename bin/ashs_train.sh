@@ -175,7 +175,7 @@ while getopts "C:D:L:w:s:x:q:r:z:m:t:S:NdhVQPlu" opt; do
     Q) ASHS_USE_QSUB=1;;
     P) ASHS_USE_PARALLEL=1;;
     l) ASHS_USE_LSF=1;;
-    l) ASHS_USE_SLURM=1;;
+    u) ASHS_USE_SLURM=1;;
     q) ASHS_USE_SOME_BATCHENV=1; ASHS_QSUB_OPTS=$OPTARG;;
     t) ASHS_GREEDY_THREADS=" -threads $OPTARG ";;
     z) ASHS_USE_SOME_BATCHENV=1; ASHS_QSUB_HOOK=$OPTARG;;
@@ -266,7 +266,25 @@ fi
 
 # Check that parallel and bsub are not both on
 if [[ $ASHS_USE_LSF && $ASHS_USE_PARALLEL ]]; then
-  echo "Cannot use LSF (-L) and Parallel (-P) at the same time"
+  echo "Cannot use LSF (-l) and Parallel (-P) at the same time"
+  exit -2
+fi
+
+# Check that SLURM and SGE are not both on
+if [[ $ASHS_USE_SLURM && $ASHS_USE_QSUB ]]; then
+  echo "Cannot use SLURM (-u) and SGE (-Q) at the same time"
+  exit -2
+fi
+
+# Check that SLURM and Parallel are not both on
+if [[ $ASHS_USE_SLURM && $ASHS_USE_PARALLEL ]]; then
+  echo "Cannot use SLURM (-u) and Parallel (-P) at the same time"
+  exit -2
+fi
+
+# Check that SLURM and LSF are not both on
+if [[ $ASHS_USE_SLURM && $ASHS_USE_LSF ]]; then
+  echo "Cannot use SLURM (-u) and LSF (-l) at the same time"
   exit -2
 fi
 

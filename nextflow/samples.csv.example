@@ -1,0 +1,4 @@
+sample_id,t1,t2
+sub001,/data/subjects/sub001/anat/sub001_T1w.nii.gz,/data/subjects/sub001/anat/sub001_T2w.nii.gz
+sub002,/data/subjects/sub002/anat/sub002_T1w.nii.gz,/data/subjects/sub002/anat/sub002_T2w.nii.gz
+sub003,/data/subjects/sub003/anat/sub003_T1w.nii.gz,/data/subjects/sub003/anat/sub003_T2w.nii.gz
